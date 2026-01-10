@@ -47,6 +47,12 @@ static void render(const client_ctx_t *ctx) {
 }
 
 static void handle_line(client_ctx_t *ctx, const char *line) {
+      if (strncmp(line, "GAMEOVER ", 9) == 0) {
+          printf("\n=== %s ===\n", line);
+          ctx->running = 0;
+          return;
+      }
+
       if (strncmp(line, "STATE ", 6) == 0) {
          int x0,y0,x1,y1,x2,y2,t;
          char d;
@@ -104,6 +110,7 @@ static void* recv_thread(void *arg) {
             if (!nl) break;
             *nl = '\0';
             handle_line(ctx, start);
+            if (!ctx->running) break;
             start = nl + 1;
         }
 

@@ -43,14 +43,14 @@ static char dir_to_char(dir_t d) {
 
 static void step_pos(int *x, int *y, dir_t d) {
       if (d == DIR_UP) (*y)--;
-    else if (d == DIR_DOWN) (*y)++;
-    else if (d == DIR_LEFT) (*x)--;
-    else if (d == DIR_RIGHT) (*x)++;
+      else if (d == DIR_DOWN) (*y)++;
+      else if (d == DIR_LEFT) (*x)--;
+      else if (d == DIR_RIGHT) (*x)++;
 
-    if (*x < 0) *x = GRID_W - 1;
-    if (*x >= GRID_W) *x = 0;
-    if (*y < 0) *y = GRID_H - 1;
-    if (*y >= GRID_H) *y = 0;
+      if (*x < 0) *x = GRID_W - 1;
+      if (*x >= GRID_W) *x = 0;
+      if (*y < 0) *y = GRID_H - 1;
+      if (*y >= GRID_H) *y = 0;
 }
 
 static void* tick_thread(void *arg) {
@@ -81,13 +81,26 @@ static void* tick_thread(void *arg) {
         int x1 = ctx->sx[1], y1 = ctx->sy[1];
         int x2 = ctx->sx[2], y2 = ctx->sy[2];
         d = ctx->dir;
+
+        if ((ctx->sx[0] == ctx->sx[1] && ctx->sy[0] == ctx->sy[1]) ||
+           (ctx->sx[0] == ctx->sx[2] && ctx->sy[0] == ctx->sy[2])) {
+           ctx->running = 0;
+        }
         pthread_mutex_unlock(&ctx->lock);
 
+        if (!ctx->running) {
+          char go[64];
+          int gn = snprintf(go, sizeof(go), "GAMEOVER SELF %d\n", tick);
+          if (gn > 0) {
+                   (void)write_all(ctx->cli_fd, go, (size_t)gn);
+               }
+          break;
+        }
         char out[128];
-                   int n = snprintf(out, sizeof(out),
-                                    "STATE %d %d %d %d %d %d %c %d\n",
-                                    x0, y0, x1, y1, x2, y2, dir_to_char(d), tick);
-                   if (n < 0) break;
+        int n = snprintf(out, sizeof(out),
+                            "STATE %d %d %d %d %d %d %c %d\n",
+                            x0, y0, x1, y1, x2, y2, dir_to_char(d), tick);
+        if (n < 0) break;
 
         if (write_all(ctx->cli_fd, out, (size_t)n) < 0) {
                        perror("server write (STATE)");
