@@ -6,8 +6,4 @@
 #define MSG_PING "PING\n"
 #define MSG_PONG "PONG\n"
 
-#define MSG_STATE_PREFIX "STATE "
-#define MSG_INPUT_PREFIX "INPUT "
-
 #endif
-

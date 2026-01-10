@@ -1,5 +1,5 @@
 CC := gcc
-CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -O2 -Iinclude
+CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -O2 -Iinclude -pthread
 
 CLIENT_SRCS := src/client/main.c
 SERVER_SRCS := src/server/main.c

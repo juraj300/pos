@@ -1,6 +1,6 @@
-buld/
+build/
 *.o
 *.a
 *.so
-client
-server
+/client
+/server
