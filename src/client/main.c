@@ -13,7 +13,10 @@ typedef struct {
     volatile int running;
 
     pthread_mutex_t lock;
-    int x, y, tick;
+    //int x, y, tick;
+    int sx[3];
+    int sy[3];
+    int tick;
     char dir;
 } client_ctx_t;
 
@@ -32,8 +35,10 @@ static void render(const client_ctx_t *ctx) {
 
     for (int y = 0; y < GRID_H; y++) {
                  for (int x = 0; x < GRID_W; x++) {
-                     if (x == ctx->x && y == ctx->y) putchar('O');
-            else putchar('.');
+                     //if (x == ctx->x && y == ctx->y) putchar('O');
+                       if (x == ctx->sx[0] && y == ctx->sy[0]) putchar('O');
+                       else if ((x == ctx->sx[1] && y == ctx->sy[1]) || (x == ctx->sx[2] && y == ctx->sy[2])) putchar('o');
+                       else putchar('.');
         }
         putchar('\n');
     }
@@ -43,19 +48,22 @@ static void render(const client_ctx_t *ctx) {
 
 static void handle_line(client_ctx_t *ctx, const char *line) {
       if (strncmp(line, "STATE ", 6) == 0) {
-        int x, y, t;
-        char d;
-        if (sscanf(line, "STATE %d %d %c %d", &x, &y, &d, &t) == 4) {
+         int x0,y0,x1,y1,x2,y2,t;
+         char d;
+         if (sscanf(line, "STATE %d %d %d %d %d %d %c %d",
+                       &x0,&y0,&x1,&y1,&x2,&y2,&d,&t) == 8) {
+
             pthread_mutex_lock(&ctx->lock);
-            ctx->x = x;
-            ctx->y = y;
+            ctx->sx[0]=x0; ctx->sy[0]=y0;
+            ctx->sx[1]=x1; ctx->sy[1]=y1;
+            ctx->sx[2]=x2; ctx->sy[2]=y2;
             ctx->dir = d;
             ctx->tick = t;
             client_ctx_t snapshot = *ctx;
             pthread_mutex_unlock(&ctx->lock);
 
             render(&snapshot);
-        }
+      }
     }
 }
 
@@ -160,8 +168,12 @@ int main(void) {
       ctx.fd = fd;
     ctx.running = 1;
     pthread_mutex_init(&ctx.lock, NULL);
-    ctx.x = 0;
-    ctx.y = 0;
+    //ctx.x = 0;
+    //ctx.y = 0;
+    ctx.sx[0]=0; ctx.sy[0]=0;
+    ctx.sx[1]=0; ctx.sy[1]=0;
+    ctx.sx[2]=0; ctx.sy[2]=0;
+
     ctx.tick = 0;
     ctx.dir = 'R';
 

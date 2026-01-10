@@ -15,7 +15,9 @@ typedef struct {
     volatile int running;
 
     pthread_mutex_t lock;
-    int x, y;
+    int sx[3];
+    int sy[3];
+    // int x, y;
     dir_t dir;
 } server_ctx_t;
 
@@ -55,18 +57,36 @@ static void* tick_thread(void *arg) {
       server_ctx_t *ctx = (server_ctx_t*)arg;
 
       for (int tick = 1; tick <= 1000000 && ctx->running; tick++) {
-                   int x, y;
+                   //int x, y;
                    dir_t d;
 
                    pthread_mutex_lock(&ctx->lock);
-        step_pos(&ctx->x, &ctx->y, ctx->dir);
-        x = ctx->x;
-        y = ctx->y;
+        //step_pos(&ctx->x, &ctx->y, ctx->dir);
+        //x = ctx->x;
+        //y = ctx->y;
+        int nx = ctx->sx[0];
+        int ny = ctx->sy[0];
+        step_pos(&nx, &ny, ctx->dir);
+
+        for (int i = 2; i >= 1; i--) {
+            ctx->sx[i] = ctx->sx[i - 1];
+            ctx->sy[i] = ctx->sy[i - 1];
+        }
+
+        ctx->sx[0] = nx;
+        ctx->sy[0] = ny;
+
+
+        int x0 = ctx->sx[0], y0 = ctx->sy[0];
+        int x1 = ctx->sx[1], y1 = ctx->sy[1];
+        int x2 = ctx->sx[2], y2 = ctx->sy[2];
         d = ctx->dir;
         pthread_mutex_unlock(&ctx->lock);
 
         char out[128];
-                   int n = snprintf(out, sizeof(out), "STATE %d %d %c %d\n", x, y, dir_to_char(d), tick);
+                   int n = snprintf(out, sizeof(out),
+                                    "STATE %d %d %d %d %d %d %c %d\n",
+                                    x0, y0, x1, y1, x2, y2, dir_to_char(d), tick);
                    if (n < 0) break;
 
         if (write_all(ctx->cli_fd, out, (size_t)n) < 0) {
@@ -179,8 +199,15 @@ int main(void) {
       ctx.cli_fd = cli_fd;
     ctx.running = 1;
     pthread_mutex_init(&ctx.lock, NULL);
-    ctx.x = GRID_W / 2;
-    ctx.y = GRID_H / 2;
+    //ctx.x = GRID_W / 2;
+    //ctx.y = GRID_H / 2;
+    //ctx.dir = DIR_RIGHT;
+    int cx = GRID_W / 2;
+    int cy = GRID_H / 2;
+
+    ctx.sx[0] = cx;     ctx.sy[0] = cy;
+    ctx.sx[1] = cx - 1; ctx.sy[1] = cy;
+    ctx.sx[2] = cx - 2; ctx.sy[2] = cy;
     ctx.dir = DIR_RIGHT;
 
     pthread_t t_tick, t_recv;
