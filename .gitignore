@@ -1,0 +1,6 @@
+buld/
+*.o
+*.a
+*.so
+client
+server
