@@ -115,14 +115,34 @@ static void* tick_thread(void *arg) {
     return NULL;
 }
 
-static void set_dir_from_input(server_ctx_t *ctx, char c) {
-      pthread_mutex_lock(&ctx->lock);
-    if (c == 'w') ctx->dir = DIR_UP;
-    else if (c == 's') ctx->dir = DIR_DOWN;
-    else if (c == 'a') ctx->dir = DIR_LEFT;
-    else if (c == 'd') ctx->dir = DIR_RIGHT;
-    pthread_mutex_unlock(&ctx->lock);
+
+static int is_opposite(dir_t a, dir_t b) {
+      return (a == DIR_UP && b == DIR_DOWN) ||
+             (a == DIR_DOWN && b == DIR_UP) ||
+             (a == DIR_LEFT && b == DIR_RIGHT) ||
+             (a == DIR_RIGHT && b == DIR_LEFT);
 }
+
+
+static void set_dir_from_input(server_ctx_t *ctx, char c) {
+      dir_t ndir;
+      int ok = 1;
+
+      if (c == 'w') ndir = DIR_UP;
+      else if (c == 's') ndir = DIR_DOWN;
+      else if (c == 'a') ndir = DIR_LEFT;
+      else if (c == 'd') ndir = DIR_RIGHT;
+      else ok = 0;
+
+      if (!ok) return;
+
+      pthread_mutex_lock(&ctx->lock);
+      if (!is_opposite(ctx->dir, ndir)) {
+        ctx->dir = ndir;
+    }
+      pthread_mutex_unlock(&ctx->lock);
+}
+
 
 static void* recv_thread(void *arg) {
       server_ctx_t *ctx = (server_ctx_t*)arg;
@@ -140,6 +160,7 @@ static void* recv_thread(void *arg) {
             printf("server: client closed connection\n");
             ctx->running = 0;
             break;
+
         }
 
         buf[n] = '\0';
