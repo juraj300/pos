@@ -8,9 +8,15 @@
 
 #include "common/ipc.h"
 
+typedef enum { DIR_UP, DIR_DOWN, DIR_LEFT, DIR_RIGHT } dir_t;
+
 typedef struct {
     int cli_fd;
     volatile int running;
+
+    pthread_mutex_t lock;
+    int x, y;
+    dir_t dir;
 } server_ctx_t;
 
 static int write_all(int fd, const char *buf, size_t len) {
@@ -23,12 +29,44 @@ static int write_all(int fd, const char *buf, size_t len) {
     return 0;
 }
 
+static char dir_to_char(dir_t d) {
+      switch (d) {
+        case DIR_UP: return 'U';
+          case DIR_DOWN: return 'D';
+          case DIR_LEFT: return 'L';
+          case DIR_RIGHT: return 'R';
+      }
+    return 'R';
+}
+
+static void step_pos(int *x, int *y, dir_t d) {
+      if (d == DIR_UP) (*y)--;
+    else if (d == DIR_DOWN) (*y)++;
+    else if (d == DIR_LEFT) (*x)--;
+    else if (d == DIR_RIGHT) (*x)++;
+
+    if (*x < 0) *x = GRID_W - 1;
+    if (*x >= GRID_W) *x = 0;
+    if (*y < 0) *y = GRID_H - 1;
+    if (*y >= GRID_H) *y = 0;
+}
+
 static void* tick_thread(void *arg) {
       server_ctx_t *ctx = (server_ctx_t*)arg;
 
-      for (int tick = 1; tick <= 100 && ctx->running; tick++) {
-                   char out[64];
-                   int n = snprintf(out, sizeof(out), "%s%d\n", MSG_STATE_PREFIX, tick);
+      for (int tick = 1; tick <= 1000000 && ctx->running; tick++) {
+                   int x, y;
+                   dir_t d;
+
+                   pthread_mutex_lock(&ctx->lock);
+        step_pos(&ctx->x, &ctx->y, ctx->dir);
+        x = ctx->x;
+        y = ctx->y;
+        d = ctx->dir;
+        pthread_mutex_unlock(&ctx->lock);
+
+        char out[128];
+                   int n = snprintf(out, sizeof(out), "STATE %d %d %c %d\n", x, y, dir_to_char(d), tick);
                    if (n < 0) break;
 
         if (write_all(ctx->cli_fd, out, (size_t)n) < 0) {
@@ -37,12 +75,20 @@ static void* tick_thread(void *arg) {
             break;
                    }
 
-        printf("server: sent: %s", out);
         usleep(200000);
     }
 
     ctx->running = 0;
     return NULL;
+}
+
+static void set_dir_from_input(server_ctx_t *ctx, char c) {
+      pthread_mutex_lock(&ctx->lock);
+    if (c == 'w') ctx->dir = DIR_UP;
+    else if (c == 's') ctx->dir = DIR_DOWN;
+    else if (c == 'a') ctx->dir = DIR_LEFT;
+    else if (c == 'd') ctx->dir = DIR_RIGHT;
+    pthread_mutex_unlock(&ctx->lock);
 }
 
 static void* recv_thread(void *arg) {
@@ -64,12 +110,17 @@ static void* recv_thread(void *arg) {
         }
 
         buf[n] = '\0';
-        printf("server: received chunk:\n%s", buf);
 
-        if (strstr(buf, "INPUT q") != NULL) {
-            printf("server: got quit input\n");
-            ctx->running = 0;
-            break;
+        char *p = buf;
+        while ((p = strstr(p, "INPUT ")) != NULL) {
+            char c = p[6];
+            if (c == 'q') {
+                printf("server: got quit input\n");
+                ctx->running = 0;
+                break;
+            }
+            set_dir_from_input(ctx, c);
+            p += 6;
         }
     }
 
@@ -122,14 +173,15 @@ int main(void) {
 
     if (strcmp(inbuf, MSG_PING) == 0) {
         if (write_all(cli_fd, MSG_PONG, strlen(MSG_PONG)) < 0) perror("write");
-        printf("server: sent: %s", MSG_PONG);
-    } else {
-        printf("server: expected PING, got something else\n");
     }
 
     server_ctx_t ctx;
       ctx.cli_fd = cli_fd;
     ctx.running = 1;
+    pthread_mutex_init(&ctx.lock, NULL);
+    ctx.x = GRID_W / 2;
+    ctx.y = GRID_H / 2;
+    ctx.dir = DIR_RIGHT;
 
     pthread_t t_tick, t_recv;
       if (pthread_create(&t_tick, NULL, tick_thread, &ctx) != 0) {
@@ -143,6 +195,8 @@ int main(void) {
 
     pthread_join(t_tick, NULL);
     pthread_join(t_recv, NULL);
+
+    pthread_mutex_destroy(&ctx.lock);
 
     close(cli_fd);
     close(srv_fd);

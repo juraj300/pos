@@ -11,6 +11,10 @@
 typedef struct {
     int fd;
     volatile int running;
+
+    pthread_mutex_t lock;
+    int x, y, tick;
+    char dir;
 } client_ctx_t;
 
 static int write_all(int fd, const char *buf, size_t len) {
@@ -23,9 +27,44 @@ static int write_all(int fd, const char *buf, size_t len) {
     return 0;
 }
 
+static void render(const client_ctx_t *ctx) {
+      printf("\033[H\033[J");
+
+    for (int y = 0; y < GRID_H; y++) {
+                 for (int x = 0; x < GRID_W; x++) {
+                     if (x == ctx->x && y == ctx->y) putchar('O');
+            else putchar('.');
+        }
+        putchar('\n');
+    }
+    printf("tick=%d dir=%c  (w/a/s/d + Enter, q + Enter quits)\n", ctx->tick, ctx->dir);
+    fflush(stdout);
+}
+
+static void handle_line(client_ctx_t *ctx, const char *line) {
+      if (strncmp(line, "STATE ", 6) == 0) {
+        int x, y, t;
+        char d;
+        if (sscanf(line, "STATE %d %d %c %d", &x, &y, &d, &t) == 4) {
+            pthread_mutex_lock(&ctx->lock);
+            ctx->x = x;
+            ctx->y = y;
+            ctx->dir = d;
+            ctx->tick = t;
+            client_ctx_t snapshot = *ctx;
+            pthread_mutex_unlock(&ctx->lock);
+
+            render(&snapshot);
+        }
+    }
+}
+
 static void* recv_thread(void *arg) {
       client_ctx_t *ctx = (client_ctx_t*)arg;
+
       char buf[256];
+      char acc[1024];
+      size_t acc_len = 0;
 
       while (ctx->running) {
         ssize_t n = read(ctx->fd, buf, sizeof(buf) - 1);
@@ -40,24 +79,45 @@ static void* recv_thread(void *arg) {
             ctx->running = 0;
             break;
         }
+
         buf[n] = '\0';
-        printf("client: received chunk:\n%s", buf);
+
+        size_t bn = (size_t)n;
+        if (acc_len + bn >= sizeof(acc)) {
+            acc_len = 0;
+        }
+        memcpy(acc + acc_len, buf, bn);
+        acc_len += bn;
+        acc[acc_len] = '\0';
+
+        char *start = acc;
+        while (1) {
+            char *nl = strchr(start, '\n');
+            if (!nl) break;
+            *nl = '\0';
+            handle_line(ctx, start);
+            start = nl + 1;
+        }
+
+        size_t rem = strlen(start);
+        memmove(acc, start, rem);
+        acc_len = rem;
+        acc[acc_len] = '\0';
     }
+
     return NULL;
 }
 
 static void* input_thread(void *arg) {
       client_ctx_t *ctx = (client_ctx_t*)arg;
 
-      printf("client: type keys, press 'q' then Enter to quit\n");
-
-    char line[64];
+      char line[64];
       while (ctx->running && fgets(line, sizeof(line), stdin) != NULL) {
         char c = line[0];
         if (c == '\n' || c == '\0') continue;
 
         char msg[64];
-        int n = snprintf(msg, sizeof(msg), "%s%c\n", MSG_INPUT_PREFIX, c);
+        int n = snprintf(msg, sizeof(msg), "INPUT %c\n", c);
         if (n < 0) continue;
 
         if (write_all(ctx->fd, msg, (size_t)n) < 0) {
@@ -95,11 +155,15 @@ int main(void) {
         close(fd);
         return 1;
     }
-    printf("client: sent: %s", MSG_PING);
 
     client_ctx_t ctx;
       ctx.fd = fd;
     ctx.running = 1;
+    pthread_mutex_init(&ctx.lock, NULL);
+    ctx.x = 0;
+    ctx.y = 0;
+    ctx.tick = 0;
+    ctx.dir = 'R';
 
     pthread_t t_recv, t_in;
       if (pthread_create(&t_recv, NULL, recv_thread, &ctx) != 0) {
@@ -117,6 +181,8 @@ int main(void) {
 
     shutdown(fd, SHUT_RDWR);
     pthread_join(t_recv, NULL);
+
+    pthread_mutex_destroy(&ctx.lock);
 
     close(fd);
     return 0;
