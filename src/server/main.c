@@ -6,6 +6,8 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 
+#include <sys/select.h>
+
 #include <time.h>
 
 #include <stdlib.h>
@@ -286,17 +288,29 @@ static void* recv_thread(void *arg) {
     return NULL;
 }
 
-int main(int argc, char** argv) {
 
-      
+int main(int argc, char **argv) {
       srand((unsigned)time(NULL));
-      int seconds = 0;
+
+    int seconds = 0;
+
+      enum { MODE_TIME, MODE_STANDARD } mode = MODE_TIME;
+
       for (int i = 1; i + 1 < argc; i++) {
-            if (strcmp(argv[i], "--seconds") == 0) {
+                   if (strcmp(argv[i], "--seconds") == 0) {
                        seconds = atoi(argv[i + 1]);
+        } else if (strcmp(argv[i], "--mode") == 0) {
+                       if (strcmp(argv[i + 1], "standard") == 0) mode = MODE_STANDARD;
+                       else if (strcmp(argv[i + 1], "time") == 0) mode = MODE_TIME;
                    }
-        }
-      int srv_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    }
+
+    const char *map_path = NULL;
+      if (argc >= 2 && argv[1][0] != '-') {
+        map_path = argv[1];
+    }
+
+    int srv_fd = socket(AF_UNIX, SOCK_STREAM, 0);
       if (srv_fd < 0) { perror("socket"); return 1; }
 
     struct sockaddr_un addr;
@@ -312,7 +326,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    if (listen(srv_fd, 1) < 0) {
+    if (listen(srv_fd, 8) < 0) {
         perror("listen");
         close(srv_fd);
         return 1;
@@ -320,77 +334,120 @@ int main(int argc, char** argv) {
 
     printf("server: listening on %s\n", POS_SOCKET_PATH);
 
-    int cli_fd = accept(srv_fd, NULL, NULL);
-      if (cli_fd < 0) {
-        perror("accept");
-        close(srv_fd);
-        unlink(POS_SOCKET_PATH);
-        return 1;
+    int base_obstacles[GRID_H][GRID_W];
+      memset(base_obstacles, 0, sizeof(base_obstacles));
+
+    if (map_path) {
+        server_ctx_t tmp;
+        memset(&tmp, 0, sizeof(tmp));
+        if (load_map(&tmp, map_path) != 0) {
+            fprintf(stderr, "server: failed to load map: %s\n", map_path);
+            close(srv_fd);
+            unlink(POS_SOCKET_PATH);
+            return 1;
+        }
+        memcpy(base_obstacles, tmp.obstacles, sizeof(base_obstacles));
+        printf("server: loaded map %s\n", map_path);
+    } else {
+        printf("server: no map (empty obstacles)\n");
     }
 
-    char inbuf[128] = {0};
-      ssize_t rn = read(cli_fd, inbuf, sizeof(inbuf) - 1);
-      if (rn < 0) {
-        perror("read");
+    while (1) {
+        int cli_fd = accept(srv_fd, NULL, NULL);
+        if (cli_fd < 0) {
+            perror("accept");
+            break;
+        }
+
+        char inbuf[128] = {0};
+        ssize_t rn = read(cli_fd, inbuf, sizeof(inbuf) - 1);
+        if (rn < 0) {
+            perror("read");
+            close(cli_fd);
+            continue;
+        }
+
+        if (strcmp(inbuf, MSG_PING) == 0) {
+            if (write_all(cli_fd, MSG_PONG, strlen(MSG_PONG)) < 0) {
+                perror("write(PONG)");
+                close(cli_fd);
+                continue;
+            }
+        } else {
+            fprintf(stderr, "server: expected PING\n");
+            close(cli_fd);
+            continue;
+        }
+
+        server_ctx_t ctx;
+        memset(&ctx, 0, sizeof(ctx));
+
+        ctx.cli_fd = cli_fd;
+        ctx.running = 1;
+        pthread_mutex_init(&ctx.lock, NULL);
+
+        memcpy(ctx.obstacles, base_obstacles, sizeof(base_obstacles));
+
+        ctx.start_time = time(NULL);
+        if (mode == MODE_TIME) ctx.time_limit_sec = seconds;
+        else ctx.time_limit_sec = 0;   
+
+        ctx.len = 3;
+        ctx.score = 0;
+
+        int cx = GRID_W / 2;
+        int cy = GRID_H / 2;
+        ctx.sx[0] = cx;     ctx.sy[0] = cy;
+        ctx.sx[1] = cx - 1; ctx.sy[1] = cy;
+        ctx.sx[2] = cx - 2; ctx.sy[2] = cy;
+        ctx.dir = DIR_RIGHT;
+
+        spawn_fruit(&ctx);
+
+        pthread_t t_tick, t_recv;
+        if (pthread_create(&t_tick, NULL, tick_thread, &ctx) != 0) {
+            perror("pthread_create tick");
+            ctx.running = 0;
+        }
+        if (pthread_create(&t_recv, NULL, recv_thread, &ctx) != 0) {
+            perror("pthread_create recv");
+            ctx.running = 0;
+        }
+
+        pthread_join(t_tick, NULL);
+        pthread_join(t_recv, NULL);
+
+        pthread_mutex_destroy(&ctx.lock);
         close(cli_fd);
-        close(srv_fd);
-        unlink(POS_SOCKET_PATH);
-        return 1;
-    }
-    printf("server: received: %s", inbuf);
 
-    if (strcmp(inbuf, MSG_PING) == 0) {
-        if (write_all(cli_fd, MSG_PONG, strlen(MSG_PONG)) < 0) perror("write");
-    }
+        if (mode == MODE_TIME) {
+            printf("server: time mode ended session -> exiting\n");
+            break;
+        }
 
-    server_ctx_t ctx;
-      ctx.cli_fd = cli_fd;
-    ctx.running = 1;
-    pthread_mutex_init(&ctx.lock, NULL);
-    memset(ctx.obstacles, 0, sizeof(ctx.obstacles));
-    ctx.time_limit_sec = seconds;
-    ctx.start_time = time(NULL);
+        printf("server: standard mode ended session -> waiting 10s for rejoin...\n");
 
-    if (argc >= 2) {
-        if (load_map(&ctx, argv[1]) != 0) {
-          fprintf(stderr, "server: failed to load map: %s\n", argv[1]);
-          return 1;
-      }
-    }
-    //ctx.x = GRID_W / 2;
-    //ctx.y = GRID_H / 2;
-    //ctx.dir = DIR_RIGHT;
-    ctx.len = 3;
-    ctx.score = 0;
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        FD_SET(srv_fd, &rfds);
 
-    int cx = GRID_W / 2;
-    int cy = GRID_H / 2;
+        struct timeval tv;
+        tv.tv_sec = 10;
+        tv.tv_usec = 0;
 
-    ctx.sx[0] = cx;     ctx.sy[0] = cy;
-    ctx.sx[1] = cx - 1; ctx.sy[1] = cy;
-    ctx.sx[2] = cx - 2; ctx.sy[2] = cy;
+        int r = select(srv_fd + 1, &rfds, NULL, NULL, &tv);
+        if (r < 0) {
+            perror("select");
+            break;
+        }
+        if (r == 0) {
+            printf("server: nobody rejoined within 10s -> exiting\n");
+            break;
+        }
 
-    ctx.dir = DIR_RIGHT;
-     
-    spawn_fruit(&ctx);
-
-
-    pthread_t t_tick, t_recv;
-      if (pthread_create(&t_tick, NULL, tick_thread, &ctx) != 0) {
-        perror("pthread_create tick");
-        ctx.running = 0;
-    }
-    if (pthread_create(&t_recv, NULL, recv_thread, &ctx) != 0) {
-        perror("pthread_create recv");
-        ctx.running = 0;
+        printf("server: client available -> accepting...\n");
     }
 
-    pthread_join(t_tick, NULL);
-    pthread_join(t_recv, NULL);
-
-    pthread_mutex_destroy(&ctx.lock);
-
-    close(cli_fd);
     close(srv_fd);
     unlink(POS_SOCKET_PATH);
     return 0;
