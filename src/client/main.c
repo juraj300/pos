@@ -5,6 +5,9 @@
 #include <pthread.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <stdlib.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 
 #include "common/ipc.h"
 
@@ -211,8 +214,97 @@ static void* input_thread(void *arg) {
     return NULL;
 }
 
+static int start_server_process(const char *map_path, const char *mode, int seconds) {
+      pid_t pid = fork();
+      if (pid < 0) {
+        perror("fork");
+        return -1;
+    }
+      if (pid == 0) {
+        char secbuf[16];
+        snprintf(secbuf, sizeof(secbuf), "%d", seconds);
+
+        if (map_path && strcmp(mode, "time") == 0 && seconds > 0) {
+            execl("./server", "./server", map_path, "--mode", "time", "--seconds", secbuf, (char*)NULL);
+        } else if (map_path && strcmp(mode, "standard") == 0) {
+            execl("./server", "./server", map_path, "--mode", "standard", (char*)NULL);
+        } else if (!map_path && strcmp(mode, "time") == 0 && seconds > 0) {
+            execl("./server", "./server", "--mode", "time", "--seconds", secbuf, (char*)NULL);
+        } else {
+            execl("./server", "./server", "--mode", "standard", (char*)NULL);
+        }
+
+        perror("execl");
+        _exit(127);
+    }
+      return 0;
+}
+
 int main(int argc, char **argv) {
-      int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+      (void)argc; (void)argv;
+
+    const char *map_path = "maps/map1.txt";
+
+      while (1) {
+        printf("\n=== POS Snake ===\n");
+        printf("1) Nova hra (spusti server)\n");
+        printf("2) Pripojit sa k hre\n");
+        printf("3) Koniec\n");
+        printf("> ");
+        fflush(stdout);
+
+        char choice[16];
+        if (!fgets(choice, sizeof(choice), stdin)) return 0;
+
+        if (choice[0] == '3') return 0;
+
+
+        printf("Mapa (1/2/3) [1]: ");
+        fflush(stdout);
+        char mline[16];
+        if (fgets(mline, sizeof(mline), stdin)) {
+            if (mline[0] == '2') map_path = "maps/map2.txt";
+            else if (mline[0] == '3') map_path = "maps/map3.txt";
+            else map_path = "maps/map1.txt";
+        }
+
+        if (choice[0] == '1') {
+
+            char mode[16] = "standard";
+            int seconds = 30;
+
+            printf("Rezim (s=standard, t=time) [s]: ");
+            fflush(stdout);
+            char rline[16];
+            if (fgets(rline, sizeof(rline), stdin) && (rline[0] == 't' || rline[0] == 'T')) {
+                strcpy(mode, "time");
+                printf("Seconds [30]: ");
+                fflush(stdout);
+                char sline[32];
+                if (fgets(sline, sizeof(sline), stdin)) {
+                    int tmp = atoi(sline);
+                    if (tmp > 0) seconds = tmp;
+                }
+            } else {
+                strcpy(mode, "standard");
+            }
+
+            if (start_server_process(map_path, mode, seconds) != 0) {
+                printf("Nepodarilo sa spustit server.\n");
+                continue;
+            }
+
+
+            usleep(200000);
+        } else if (choice[0] != '2') {
+            printf("Zla volba.\n");
+            continue;
+        }
+
+        break;
+    }
+
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
       if (fd < 0) { perror("socket"); return 1; }
 
     struct sockaddr_un addr;
@@ -236,20 +328,17 @@ int main(int argc, char **argv) {
       ctx.fd = fd;
     ctx.running = 1;
     pthread_mutex_init(&ctx.lock, NULL);
-    memset(ctx.obstacles, 0, sizeof(ctx.obstacles));
 
-    if (argc >= 2) {
-        if (load_map(&ctx, argv[1]) != 0) {
-          fprintf(stderr, "client: failed to load map: %s\n", argv[1]);
-          return 1;
-      }
+    memset(ctx.obstacles, 0, sizeof(ctx.obstacles));
+    if (load_map(&ctx, map_path) != 0) {
+        fprintf(stderr, "client: failed to load map: %s\n", map_path);
+        close(fd);
+        return 1;
     }
 
-    //ctx.x = 0;
-    //ctx.y = 0;
-    ctx.sx[0]=0; ctx.sy[0]=0;
-    ctx.sx[1]=0; ctx.sy[1]=0;
-    ctx.sx[2]=0; ctx.sy[2]=0;
+    ctx.sx[0] = 0; ctx.sy[0] = 0;
+    ctx.sx[1] = 0; ctx.sy[1] = 0;
+    ctx.sx[2] = 0; ctx.sy[2] = 0;
 
     ctx.tick = 0;
     ctx.dir = 'R';
@@ -277,3 +366,4 @@ int main(int argc, char **argv) {
     return 0;
 }
 
+ 
