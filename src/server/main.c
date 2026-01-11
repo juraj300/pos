@@ -347,15 +347,12 @@ int main(int argc, char **argv) {
       memset(base_obstacles, 0, sizeof(base_obstacles));
 
     if (map_path) {
-        server_ctx_t tmp;
-        memset(&tmp, 0, sizeof(tmp));
         if (load_map_obstacles(base_obstacles, map_path) != 0) {
             fprintf(stderr, "server: failed to load map: %s\n", map_path);
             close(srv_fd);
             unlink(POS_SOCKET_PATH);
             return 1;
         }
-        memcpy(base_obstacles, tmp.obstacles, sizeof(base_obstacles));
         printf("server: loaded map %s\n", map_path);
     } else {
         printf("server: no map (empty obstacles)\n");
