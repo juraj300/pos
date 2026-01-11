@@ -39,6 +39,8 @@ typedef struct {
 
     int time_limit_sec;
     time_t start_time;
+    int paused;
+    time_t resume_unfreeze_at;
 } server_ctx_t;
 
 static int load_map(server_ctx_t *ctx, const char *path) {
@@ -118,109 +120,125 @@ static void step_pos(int *x, int *y, dir_t d) {
 static void* tick_thread(void *arg) {
       server_ctx_t *ctx = (server_ctx_t*)arg;
 
-  for (int tick = 1; tick <= 1000000 && ctx->running; tick++) {
-                       dir_t d;
-                       int gameover_wall = 0;
-                       int gameover_time = 0;
+      for (int tick = 1; tick <= 1000000 && ctx->running; tick++) {
+                   dir_t d;
 
-                       int time_left = -1;
-                       if (ctx->time_limit_sec > 0) {
-                             time_t now = time(NULL);
-                             int elapsed = (int)difftime(now, ctx->start_time);
-                             time_left = ctx->time_limit_sec - elapsed;
-                             if (time_left <= 0) {
-                                  ctx->running = 0;
-                                  gameover_time = 1;
-                              }
-                         }
+                   int gameover_wall = 0;
+                   int gameover_time = 0;
 
+                   int time_left = -1; 
+                   if (ctx->time_limit_sec > 0) {
+                       time_t now = time(NULL);
+                       int elapsed = (int)difftime(now, ctx->start_time);
+                       time_left = ctx->time_limit_sec - elapsed;
+                       if (time_left <= 0) {
+                           ctx->running = 0;
+                           gameover_time = 1;
+                       }
+                   }
 
+                   pthread_mutex_lock(&ctx->lock);
 
-        pthread_mutex_lock(&ctx->lock);
-        //step_pos(&ctx->x, &ctx->y, ctx->dir);
-        //x = ctx->x;
-        //y = ctx->y;
-        int nx = ctx->sx[0];
-        int ny = ctx->sy[0];
-        step_pos(&nx, &ny, ctx->dir);
-        if (ctx->obstacles[ny][nx]) {
-          ctx->running = 0;
-          gameover_wall = 1;
-        }
-        for (int i = ctx->len - 1; i >= 1; i--) {
-          ctx->sx[i] = ctx->sx[i - 1];
-          ctx->sy[i] = ctx->sy[i - 1];
-        }
-        ctx->sx[0] = nx;
-        ctx->sy[0] = ny;
+                   int paused = ctx->paused;
+                   int freeze_left = 0;
+                   time_t now2 = time(NULL);
+                   if (!paused && ctx->resume_unfreeze_at != 0 && now2 < ctx->resume_unfreeze_at) {
+                       freeze_left = (int)(ctx->resume_unfreeze_at - now2);
+                   }
 
-        d = ctx->dir;
+                   int do_move = 1;
+                   if (paused) do_move = 0;
+                   if (!paused && freeze_left > 0) do_move = 0;
 
+                   if (do_move) {
+                       int nx = ctx->sx[0];
+                       int ny = ctx->sy[0];
+                       step_pos(&nx, &ny, ctx->dir);
 
-        if (ctx->sx[0] == ctx->fx && ctx->sy[0] == ctx->fy) {
-          ctx->score++;
+                       if (ctx->obstacles[ny][nx]) {
+                           ctx->running = 0;
+                           gameover_wall = 1;
+                       } else {
 
-          if (ctx->len < MAX_SNAKE) {
-                   ctx->sx[ctx->len] = ctx->sx[ctx->len - 1];
-                   ctx->sy[ctx->len] = ctx->sy[ctx->len - 1];
-                   ctx->len++;
+                           for (int i = ctx->len - 1; i >= 1; i--) {
+                               ctx->sx[i] = ctx->sx[i - 1];
+                               ctx->sy[i] = ctx->sy[i - 1];
+                           }
+                           ctx->sx[0] = nx;
+                           ctx->sy[0] = ny;
+
+                           if (ctx->sx[0] == ctx->fx && ctx->sy[0] == ctx->fy) {
+                               ctx->score++;
+
+                               if (ctx->len < MAX_SNAKE) {
+                                   ctx->sx[ctx->len] = ctx->sx[ctx->len - 1];
+                                   ctx->sy[ctx->len] = ctx->sy[ctx->len - 1];
+                                   ctx->len++;
+                               }
+
+                               spawn_fruit(ctx);
+                           }
+
+                           for (int i = 1; i < ctx->len; i++) {
+                               if (ctx->sx[0] == ctx->sx[i] && ctx->sy[0] == ctx->sy[i]) {
+                                   ctx->running = 0;
+                                   break;
+                               }
+                           }
+                       }
+                   }
+
+                   d = ctx->dir;
+                   (void)d;
+
+                   pthread_mutex_unlock(&ctx->lock);
+
+                   if (!ctx->running) {
+                       char go[64];
+                       const char *reason = "SELF";
+                       if (gameover_time) reason = "TIME";
+                       else if (gameover_wall) reason = "WALL";
+
+                       int gn = snprintf(go, sizeof(go), "GAMEOVER %s %d\n", reason, tick);
+                       if (gn > 0) {
+                           (void)write_all(ctx->cli_fd, go, (size_t)gn);
+                       }
+                       break;
+                   }
+
+                   char out[2048];
+
+                   int n = snprintf(out, sizeof(out), "STATE %d %d %d %d %d %d ",
+                                                             ctx->len, ctx->score, tick, time_left, paused, freeze_left);
+                   if (n < 0) break;
+
+                   for (int i = 0; i < ctx->len; i++) {
+                       int m = snprintf(out + n, sizeof(out) - (size_t)n, "%d %d ",
+                                                                     ctx->sx[i], ctx->sy[i]);
+                       if (m < 0) { n = -1; break; }
+                       n += m;
+
+                       if ((size_t)n >= sizeof(out) - 32) { n = -1; break; }
+                   }
+                   if (n < 0) break;
+
+                   int m = snprintf(out + n, sizeof(out) - (size_t)n, "%d %d\n", ctx->fx, ctx->fy);
+                   if (m < 0) break;
+                   n += m;
+
+                   if (write_all(ctx->cli_fd, out, (size_t)n) < 0) {
+                       perror("server write (STATE)");
+                       ctx->running = 0;
+                       break;
+                   }
+
+                   usleep(200000);
                }
-          spawn_fruit(ctx);
 
-        }
-        for (int i = 1; i < ctx->len; i++) {
-          if (ctx->sx[0] == ctx->sx[i] && ctx->sy[0] == ctx->sy[i]) {
-                   ctx->running = 0;
-                   break;
-               }
-        }
-        pthread_mutex_unlock(&ctx->lock);
-
-        if (!ctx->running) {
-          char go[64];
-          const char *reason = "SELF";
-          if (gameover_time) reason = "TIME";
-          else if (gameover_wall) reason = "WALL";
-
-          int gn = snprintf(go, sizeof(go), "GAMEOVER %s %d\n", reason, tick);
-          if (gn > 0) {
-               (void)write_all(ctx->cli_fd, go, (size_t)gn);
-           }
-          break;
-    }
-
-        char out[1024];
-
-        int n = snprintf(out, sizeof(out), "STATE %d %d %d %d ",
-                                      ctx->len, ctx->score, tick, time_left);
-        if (n < 0) break;
-
-        for (int i = 0; i < ctx->len; i++) {
-          int m = snprintf(out + n, sizeof(out) - (size_t)n, "%d %d ",
-                                                ctx->sx[i], ctx->sy[i]);
-          if (m < 0) { n = -1; break; }
-          n += m;
-
-          if ((size_t)n >= sizeof(out) - 32) { n = -1; break; }
-        }
-        if (n < 0) break;
-
-        int m = snprintf(out + n, sizeof(out) - (size_t)n, "%d %d\n",
-                                      ctx->fx, ctx->fy);
-        if (m < 0) break;
-        n += m;
-
-        if (write_all(ctx->cli_fd, out, (size_t)n) < 0) {
-          perror("server write (STATE)");
-          ctx->running = 0;
-          break;
-    }
-        usleep(200000);
-    }
-
-    ctx->running = 0;
-    return NULL;
+      ctx->running = 0;
+      return NULL;
 }
+
 
 
 static int is_opposite(dir_t a, dir_t b) {
@@ -232,6 +250,11 @@ static int is_opposite(dir_t a, dir_t b) {
 
 
 static void set_dir_from_input(server_ctx_t *ctx, char c) {
+      if (ctx->paused) {
+        pthread_mutex_unlock(&ctx->lock);
+        return;
+      }
+
       dir_t ndir;
       int ok = 1;
 
@@ -280,6 +303,19 @@ static void* recv_thread(void *arg) {
                 ctx->running = 0;
                 break;
             }
+            if (c == 'p') {
+              pthread_mutex_lock(&ctx->lock);
+             if (!ctx->paused) {
+               ctx->paused = 1;
+
+           } else {
+              ctx->paused = 0;
+              ctx->resume_unfreeze_at = time(NULL) + 3;
+            }
+            pthread_mutex_unlock(&ctx->lock);
+            p += 6;
+            continue;
+      }
             set_dir_from_input(ctx, c);
             p += 6;
         }

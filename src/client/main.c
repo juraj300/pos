@@ -26,6 +26,8 @@ typedef struct {
     char dir;
     int obstacles[GRID_H][GRID_W];
     int time_left;
+    int paused;
+    int freeze_left;
 } client_ctx_t;
 
 static int write_all(int fd, const char *buf, size_t len) {
@@ -88,7 +90,9 @@ static void render(const client_ctx_t *ctx) {
     printf("score=%d tick=%d\n", ctx->score, ctx->tick);
     if (ctx->time_left >= 0) printf("time_left=%d s\n", ctx->time_left);
     else printf("time_left=∞\n");
-
+    printf("score=%d tick=%d time_left=%d paused=%d freeze_left=%d\n",
+                ctx->score, ctx->tick, ctx->time_left, ctx->paused, ctx->freeze_left);
+    printf("(w/a/s/d + Enter) p=pause/resume, q=quit\n");
 
     fflush(stdout);
 }
@@ -100,16 +104,18 @@ static void handle_line(client_ctx_t *ctx, const char *line) {
           return;
       }
 
-      int len, score, tick, time_left;
+      int len, score, tick, time_left, paused, freeze_left;
       int off = 0;
 
-      if (sscanf(line, "STATE %d %d %d %d %n", &len, &score, &tick, &time_left, &off) == 4) {
+      if (sscanf(line, "STATE %d %d %d %d %d %d %n", &len, &score, &tick, &time_left, &paused, &freeze_left, &off) == 6) {
 
         pthread_mutex_lock(&ctx->lock);
         ctx->len = len;
         ctx->score = score;
         ctx->tick = tick;
         ctx->time_left = time_left;
+        ctx->paused = paused;
+        ctx->freeze_left = freeze_left;
 
 
         const char *p = line + off;
