@@ -10,6 +10,9 @@
 #include <sys/wait.h>
 
 #include "common/ipc.h"
+#include "common/util.h"
+#include "common/map.h"
+
 
 #define MAX_SNAKE 100
 
@@ -32,38 +35,6 @@ typedef struct {
     int paused;
     int freeze_left;
 } client_ctx_t;
-
-static int write_all(int fd, const char *buf, size_t len) {
-      size_t off = 0;
-      while (off < len) {
-        ssize_t n = write(fd, buf + off, len - off);
-        if (n < 0) return -1;
-        off += (size_t)n;
-    }
-    return 0;
-}
-
-static int load_map(client_ctx_t *ctx, const char *path) {
-      FILE *f = fopen(path, "r");
-      if (!f) return -1;
-
-      for (int y = 0; y < GRID_H; y++) {
-                   for (int x = 0; x < GRID_W; x++) {
-                       int c = fgetc(f);
-                       while (c == '\r') c = fgetc(f);
-                       if (c == EOF) { fclose(f); return -1; }
-
-                       ctx->obstacles[y][x] = (c == '#') ? 1 : 0;
-                   }
-
-                   int c = fgetc(f);
-                   while (c != '\n' && c != EOF) c = fgetc(f);
-               }
-
-      fclose(f);
-      return 0;
-}
-
 
 static void render(const client_ctx_t *ctx) {
       printf("\033[H\033[J");
@@ -330,7 +301,7 @@ int main(int argc, char **argv) {
     pthread_mutex_init(&ctx.lock, NULL);
 
     memset(ctx.obstacles, 0, sizeof(ctx.obstacles));
-    if (load_map(&ctx, map_path) != 0) {
+    if (load_map_obstacles(ctx.obstacles, map_path) != 0) {
         fprintf(stderr, "client: failed to load map: %s\n", map_path);
         close(fd);
         return 1;

@@ -12,6 +12,8 @@
 
 #include <stdlib.h>
 
+#include "common/util.h"
+#include "common/map.h"
 
 #include "common/ipc.h"
 
@@ -43,27 +45,6 @@ typedef struct {
     time_t resume_unfreeze_at;
 } server_ctx_t;
 
-static int load_map(server_ctx_t *ctx, const char *path) {
-      FILE *f = fopen(path, "r");
-      if (!f) return -1;
-
-      for (int y = 0; y < GRID_H; y++) {
-                   for (int x = 0; x < GRID_W; x++) {
-                       int c = fgetc(f);
-                       while (c == '\r') c = fgetc(f);
-                       if (c == EOF) { fclose(f); return -1; }
-
-                       if (c == '#') ctx->obstacles[y][x] = 1;
-                       else ctx->obstacles[y][x] = 0;
-                   }
-
-                   int c = fgetc(f);
-                   while (c != '\n' && c != EOF) c = fgetc(f);
-               }
-
-      fclose(f);
-      return 0;
-}
 
 static int cell_occupied_by_snake(const server_ctx_t *ctx, int x, int y) {
       for (int i = 0; i < ctx->len; i++) {
@@ -85,15 +66,7 @@ static void spawn_fruit(server_ctx_t *ctx) {
         return;
     }
 }
-static int write_all(int fd, const char *buf, size_t len) {
-      size_t off = 0;
-      while (off < len) {
-        ssize_t n = write(fd, buf + off, len - off);
-        if (n < 0) return -1;
-        off += (size_t)n;
-    }
-    return 0;
-}
+
 
 static char dir_to_char(dir_t d) {
       switch (d) {
@@ -376,7 +349,7 @@ int main(int argc, char **argv) {
     if (map_path) {
         server_ctx_t tmp;
         memset(&tmp, 0, sizeof(tmp));
-        if (load_map(&tmp, map_path) != 0) {
+        if (load_map_obstacles(base_obstacles, map_path) != 0) {
             fprintf(stderr, "server: failed to load map: %s\n", map_path);
             close(srv_fd);
             unlink(POS_SOCKET_PATH);
@@ -417,13 +390,12 @@ int main(int argc, char **argv) {
 
         server_ctx_t ctx;
         memset(&ctx, 0, sizeof(ctx));
-
         ctx.cli_fd = cli_fd;
         ctx.running = 1;
         pthread_mutex_init(&ctx.lock, NULL);
 
         memcpy(ctx.obstacles, base_obstacles, sizeof(base_obstacles));
-
+        
         ctx.start_time = time(NULL);
         if (mode == MODE_TIME) ctx.time_limit_sec = seconds;
         else ctx.time_limit_sec = 0;   
