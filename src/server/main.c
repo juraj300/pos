@@ -34,6 +34,9 @@ typedef struct {
     int obstacles[GRID_H][GRID_W];
     // int x, y;
     dir_t dir;
+
+    int time_limit_sec;
+    time_t start_time;
 } server_ctx_t;
 
 static int load_map(server_ctx_t *ctx, const char *path) {
@@ -113,12 +116,25 @@ static void step_pos(int *x, int *y, dir_t d) {
 static void* tick_thread(void *arg) {
       server_ctx_t *ctx = (server_ctx_t*)arg;
 
-      for (int tick = 1; tick <= 1000000 && ctx->running; tick++) {
-                   //int x, y;
-                   dir_t d;
-                   int gameover_wall = 0;
+  for (int tick = 1; tick <= 1000000 && ctx->running; tick++) {
+                       dir_t d;
+                       int gameover_wall = 0;
+                       int gameover_time = 0;
 
-                   pthread_mutex_lock(&ctx->lock);
+                       int time_left = -1;
+                       if (ctx->time_limit_sec > 0) {
+                             time_t now = time(NULL);
+                             int elapsed = (int)difftime(now, ctx->start_time);
+                             time_left = ctx->time_limit_sec - elapsed;
+                             if (time_left <= 0) {
+                                  ctx->running = 0;
+                                  gameover_time = 1;
+                              }
+                         }
+
+                       pthread_mutex_lock(&ctx->lock);
+
+        pthread_mutex_lock(&ctx->lock);
         //step_pos(&ctx->x, &ctx->y, ctx->dir);
         //x = ctx->x;
         //y = ctx->y;
@@ -160,18 +176,21 @@ static void* tick_thread(void *arg) {
 
         if (!ctx->running) {
           char go[64];
-          const char *reason = gameover_wall ? "WALL" : "SELF";
+          const char *reason = "SELF";
+          if (gameover_time) reason = "TIME";
+          else if (gameover_wall) reason = "WALL";
+
           int gn = snprintf(go, sizeof(go), "GAMEOVER %s %d\n", reason, tick);
           if (gn > 0) {
-                   (void)write_all(ctx->cli_fd, go, (size_t)gn);
-               }
+               (void)write_all(ctx->cli_fd, go, (size_t)gn);
+           }
           break;
-        }
+    }
 
         char out[1024];
 
-        int n = snprintf(out, sizeof(out), "STATE %d %d %d ",
-                                      ctx->len, ctx->score, tick);
+        int n = snprintf(out, sizeof(out), "STATE %d %d %d %d ",
+                                      ctx->len, ctx->score, tick, time_left);
         if (n < 0) break;
 
         for (int i = 0; i < ctx->len; i++) {
@@ -271,7 +290,12 @@ int main(int argc, char** argv) {
 
       
       srand((unsigned)time(NULL));
-
+      int seconds = 0;
+      for (int i = 1; i + 1 < argc; i++) {
+            if (strcmp(argv[i], "--seconds") == 0) {
+                       seconds = atoi(argv[i + 1]);
+                   }
+        }
       int srv_fd = socket(AF_UNIX, SOCK_STREAM, 0);
       if (srv_fd < 0) { perror("socket"); return 1; }
 
@@ -324,6 +348,8 @@ int main(int argc, char** argv) {
     ctx.running = 1;
     pthread_mutex_init(&ctx.lock, NULL);
     memset(ctx.obstacles, 0, sizeof(ctx.obstacles));
+    ctx.time_limit_sec = seconds;
+    ctx.start_time = time(NULL);
 
     if (argc >= 2) {
         if (load_map(&ctx, argv[1]) != 0) {

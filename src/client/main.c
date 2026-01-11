@@ -25,6 +25,7 @@ typedef struct {
     int tick;
     char dir;
     int obstacles[GRID_H][GRID_W];
+    int time_left;
 } client_ctx_t;
 
 static int write_all(int fd, const char *buf, size_t len) {
@@ -85,6 +86,9 @@ static void render(const client_ctx_t *ctx) {
     }
     printf("tick=%d dir=%c  (w/a/s/d + Enter, q + Enter quits)\n", ctx->tick, ctx->dir);
     printf("score=%d tick=%d\n", ctx->score, ctx->tick);
+    if (ctx->time_left >= 0) printf("time_left=%d s\n", ctx->time_left);
+    else printf("time_left=∞\n");
+
 
     fflush(stdout);
 }
@@ -96,14 +100,17 @@ static void handle_line(client_ctx_t *ctx, const char *line) {
           return;
       }
 
-      int len, score, tick;
+      int len, score, tick, time_left;
       int off = 0;
 
-      if (sscanf(line, "STATE %d %d %d %n", &len, &score, &tick, &off) == 3) {
+      if (sscanf(line, "STATE %d %d %d %d %n", &len, &score, &tick, &time_left, &off) == 4) {
+
         pthread_mutex_lock(&ctx->lock);
         ctx->len = len;
         ctx->score = score;
         ctx->tick = tick;
+        ctx->time_left = time_left;
+
 
         const char *p = line + off;
         for (int i = 0; i < len; i++) {
