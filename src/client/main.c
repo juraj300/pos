@@ -24,6 +24,7 @@ typedef struct {
     int score;
     int tick;
     char dir;
+    int obstacles[GRID_H][GRID_W];
 } client_ctx_t;
 
 static int write_all(int fd, const char *buf, size_t len) {
@@ -35,6 +36,28 @@ static int write_all(int fd, const char *buf, size_t len) {
     }
     return 0;
 }
+
+static int load_map(client_ctx_t *ctx, const char *path) {
+      FILE *f = fopen(path, "r");
+      if (!f) return -1;
+
+      for (int y = 0; y < GRID_H; y++) {
+                   for (int x = 0; x < GRID_W; x++) {
+                       int c = fgetc(f);
+                       while (c == '\r') c = fgetc(f);
+                       if (c == EOF) { fclose(f); return -1; }
+
+                       ctx->obstacles[y][x] = (c == '#') ? 1 : 0;
+                   }
+
+                   int c = fgetc(f);
+                   while (c != '\n' && c != EOF) c = fgetc(f);
+               }
+
+      fclose(f);
+      return 0;
+}
+
 
 static void render(const client_ctx_t *ctx) {
       printf("\033[H\033[J");
@@ -53,8 +76,10 @@ static void render(const client_ctx_t *ctx) {
                         }
                         if (body) putchar('o');
                         else if (x == ctx->fx && y == ctx->fy) putchar('*');
+                        else if (ctx->obstacles[y][x]) putchar('#');
                         else putchar('.');
-      }
+
+                      }
         }
         putchar('\n');
     }
@@ -173,7 +198,7 @@ static void* input_thread(void *arg) {
     return NULL;
 }
 
-int main(void) {
+int main(int argc, char **argv) {
       int fd = socket(AF_UNIX, SOCK_STREAM, 0);
       if (fd < 0) { perror("socket"); return 1; }
 
@@ -198,6 +223,15 @@ int main(void) {
       ctx.fd = fd;
     ctx.running = 1;
     pthread_mutex_init(&ctx.lock, NULL);
+    memset(ctx.obstacles, 0, sizeof(ctx.obstacles));
+
+    if (argc >= 2) {
+        if (load_map(&ctx, argv[1]) != 0) {
+          fprintf(stderr, "client: failed to load map: %s\n", argv[1]);
+          return 1;
+      }
+    }
+
     //ctx.x = 0;
     //ctx.y = 0;
     ctx.sx[0]=0; ctx.sy[0]=0;

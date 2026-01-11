@@ -8,6 +8,8 @@
 
 #include <time.h>
 
+#include <stdlib.h>
+
 
 #include "common/ipc.h"
 
@@ -28,10 +30,54 @@ typedef struct {
 
     int fx, fy;     
     int score;
+
+    int obstacles[GRID_H][GRID_W];
     // int x, y;
     dir_t dir;
 } server_ctx_t;
 
+static int load_map(server_ctx_t *ctx, const char *path) {
+      FILE *f = fopen(path, "r");
+      if (!f) return -1;
+
+      for (int y = 0; y < GRID_H; y++) {
+                   for (int x = 0; x < GRID_W; x++) {
+                       int c = fgetc(f);
+                       while (c == '\r') c = fgetc(f);
+                       if (c == EOF) { fclose(f); return -1; }
+
+                       if (c == '#') ctx->obstacles[y][x] = 1;
+                       else ctx->obstacles[y][x] = 0;
+                   }
+
+                   int c = fgetc(f);
+                   while (c != '\n' && c != EOF) c = fgetc(f);
+               }
+
+      fclose(f);
+      return 0;
+}
+
+static int cell_occupied_by_snake(const server_ctx_t *ctx, int x, int y) {
+      for (int i = 0; i < ctx->len; i++) {
+                   if (ctx->sx[i] == x && ctx->sy[i] == y) return 1;
+               }
+      return 0;
+}
+
+static void spawn_fruit(server_ctx_t *ctx) {
+      while (1) {
+        int x = rand() % GRID_W;
+        int y = rand() % GRID_H;
+
+        if (ctx->obstacles[y][x]) continue;
+        if (cell_occupied_by_snake(ctx, x, y)) continue;
+
+        ctx->fx = x;
+        ctx->fy = y;
+        return;
+    }
+}
 static int write_all(int fd, const char *buf, size_t len) {
       size_t off = 0;
       while (off < len) {
@@ -70,6 +116,7 @@ static void* tick_thread(void *arg) {
       for (int tick = 1; tick <= 1000000 && ctx->running; tick++) {
                    //int x, y;
                    dir_t d;
+                   int gameover_wall = 0;
 
                    pthread_mutex_lock(&ctx->lock);
         //step_pos(&ctx->x, &ctx->y, ctx->dir);
@@ -78,7 +125,10 @@ static void* tick_thread(void *arg) {
         int nx = ctx->sx[0];
         int ny = ctx->sy[0];
         step_pos(&nx, &ny, ctx->dir);
-
+        if (ctx->obstacles[ny][nx]) {
+          ctx->running = 0;
+          gameover_wall = 1;
+        }
         for (int i = ctx->len - 1; i >= 1; i--) {
           ctx->sx[i] = ctx->sx[i - 1];
           ctx->sy[i] = ctx->sy[i - 1];
@@ -97,9 +147,8 @@ static void* tick_thread(void *arg) {
                    ctx->sy[ctx->len] = ctx->sy[ctx->len - 1];
                    ctx->len++;
                }
+          spawn_fruit(ctx);
 
-          ctx->fx = rand() % GRID_W;
-          ctx->fy = rand() % GRID_H;
         }
         for (int i = 1; i < ctx->len; i++) {
           if (ctx->sx[0] == ctx->sx[i] && ctx->sy[0] == ctx->sy[i]) {
@@ -111,12 +160,14 @@ static void* tick_thread(void *arg) {
 
         if (!ctx->running) {
           char go[64];
-          int gn = snprintf(go, sizeof(go), "GAMEOVER SELF %d\n", tick);
+          const char *reason = gameover_wall ? "WALL" : "SELF";
+          int gn = snprintf(go, sizeof(go), "GAMEOVER %s %d\n", reason, tick);
           if (gn > 0) {
                    (void)write_all(ctx->cli_fd, go, (size_t)gn);
                }
           break;
         }
+
         char out[1024];
 
         int n = snprintf(out, sizeof(out), "STATE %d %d %d ",
@@ -216,7 +267,8 @@ static void* recv_thread(void *arg) {
     return NULL;
 }
 
-int main(void) {
+int main(int argc, char** argv) {
+
       
       srand((unsigned)time(NULL));
 
@@ -271,6 +323,14 @@ int main(void) {
       ctx.cli_fd = cli_fd;
     ctx.running = 1;
     pthread_mutex_init(&ctx.lock, NULL);
+    memset(ctx.obstacles, 0, sizeof(ctx.obstacles));
+
+    if (argc >= 2) {
+        if (load_map(&ctx, argv[1]) != 0) {
+          fprintf(stderr, "server: failed to load map: %s\n", argv[1]);
+          return 1;
+      }
+    }
     //ctx.x = GRID_W / 2;
     //ctx.y = GRID_H / 2;
     //ctx.dir = DIR_RIGHT;
@@ -286,8 +346,8 @@ int main(void) {
 
     ctx.dir = DIR_RIGHT;
      
-    ctx.fx = rand() % GRID_W;
-    ctx.fy = rand() % GRID_H;
+    spawn_fruit(&ctx);
+
 
     pthread_t t_tick, t_recv;
       if (pthread_create(&t_tick, NULL, tick_thread, &ctx) != 0) {

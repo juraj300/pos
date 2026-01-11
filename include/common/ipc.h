@@ -9,7 +9,7 @@
 #define MSG_STATE_PREFIX "STATE "
 #define MSG_INPUT_PREFIX "INPUT "
 
-#define GRID_W 10
+#define GRID_W 20
 #define GRID_H 10
 
 #endif
