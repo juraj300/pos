@@ -132,7 +132,7 @@ static void* tick_thread(void *arg) {
                               }
                          }
 
-                       pthread_mutex_lock(&ctx->lock);
+
 
         pthread_mutex_lock(&ctx->lock);
         //step_pos(&ctx->x, &ctx->y, ctx->dir);
