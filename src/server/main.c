@@ -6,7 +6,12 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 
+#include <time.h>
+
+
 #include "common/ipc.h"
+
+#define MAX_SNAKE 100
 
 typedef enum { DIR_UP, DIR_DOWN, DIR_LEFT, DIR_RIGHT } dir_t;
 
@@ -15,8 +20,14 @@ typedef struct {
     volatile int running;
 
     pthread_mutex_t lock;
-    int sx[3];
-    int sy[3];
+    
+
+    int sx[MAX_SNAKE];
+    int sy[MAX_SNAKE];
+    int len;        
+
+    int fx, fy;     
+    int score;
     // int x, y;
     dir_t dir;
 } server_ctx_t;
@@ -68,23 +79,33 @@ static void* tick_thread(void *arg) {
         int ny = ctx->sy[0];
         step_pos(&nx, &ny, ctx->dir);
 
-        for (int i = 2; i >= 1; i--) {
-            ctx->sx[i] = ctx->sx[i - 1];
-            ctx->sy[i] = ctx->sy[i - 1];
+        for (int i = ctx->len - 1; i >= 1; i--) {
+          ctx->sx[i] = ctx->sx[i - 1];
+          ctx->sy[i] = ctx->sy[i - 1];
         }
-
         ctx->sx[0] = nx;
         ctx->sy[0] = ny;
 
-
-        int x0 = ctx->sx[0], y0 = ctx->sy[0];
-        int x1 = ctx->sx[1], y1 = ctx->sy[1];
-        int x2 = ctx->sx[2], y2 = ctx->sy[2];
         d = ctx->dir;
 
-        if ((ctx->sx[0] == ctx->sx[1] && ctx->sy[0] == ctx->sy[1]) ||
-           (ctx->sx[0] == ctx->sx[2] && ctx->sy[0] == ctx->sy[2])) {
-           ctx->running = 0;
+
+        if (ctx->sx[0] == ctx->fx && ctx->sy[0] == ctx->fy) {
+          ctx->score++;
+
+          if (ctx->len < MAX_SNAKE) {
+                   ctx->sx[ctx->len] = ctx->sx[ctx->len - 1];
+                   ctx->sy[ctx->len] = ctx->sy[ctx->len - 1];
+                   ctx->len++;
+               }
+
+          ctx->fx = rand() % GRID_W;
+          ctx->fy = rand() % GRID_H;
+        }
+        for (int i = 1; i < ctx->len; i++) {
+          if (ctx->sx[0] == ctx->sx[i] && ctx->sy[0] == ctx->sy[i]) {
+                   ctx->running = 0;
+                   break;
+               }
         }
         pthread_mutex_unlock(&ctx->lock);
 
@@ -96,18 +117,32 @@ static void* tick_thread(void *arg) {
                }
           break;
         }
-        char out[128];
-        int n = snprintf(out, sizeof(out),
-                            "STATE %d %d %d %d %d %d %c %d\n",
-                            x0, y0, x1, y1, x2, y2, dir_to_char(d), tick);
+        char out[1024];
+
+        int n = snprintf(out, sizeof(out), "STATE %d %d %d ",
+                                      ctx->len, ctx->score, tick);
         if (n < 0) break;
 
-        if (write_all(ctx->cli_fd, out, (size_t)n) < 0) {
-                       perror("server write (STATE)");
-            ctx->running = 0;
-            break;
-                   }
+        for (int i = 0; i < ctx->len; i++) {
+          int m = snprintf(out + n, sizeof(out) - (size_t)n, "%d %d ",
+                                                ctx->sx[i], ctx->sy[i]);
+          if (m < 0) { n = -1; break; }
+          n += m;
 
+          if ((size_t)n >= sizeof(out) - 32) { n = -1; break; }
+        }
+        if (n < 0) break;
+
+        int m = snprintf(out + n, sizeof(out) - (size_t)n, "%d %d\n",
+                                      ctx->fx, ctx->fy);
+        if (m < 0) break;
+        n += m;
+
+        if (write_all(ctx->cli_fd, out, (size_t)n) < 0) {
+          perror("server write (STATE)");
+          ctx->running = 0;
+          break;
+    }
         usleep(200000);
     }
 
@@ -182,6 +217,9 @@ static void* recv_thread(void *arg) {
 }
 
 int main(void) {
+      
+      srand((unsigned)time(NULL));
+
       int srv_fd = socket(AF_UNIX, SOCK_STREAM, 0);
       if (srv_fd < 0) { perror("socket"); return 1; }
 
@@ -236,13 +274,20 @@ int main(void) {
     //ctx.x = GRID_W / 2;
     //ctx.y = GRID_H / 2;
     //ctx.dir = DIR_RIGHT;
+    ctx.len = 3;
+    ctx.score = 0;
+
     int cx = GRID_W / 2;
     int cy = GRID_H / 2;
 
     ctx.sx[0] = cx;     ctx.sy[0] = cy;
     ctx.sx[1] = cx - 1; ctx.sy[1] = cy;
     ctx.sx[2] = cx - 2; ctx.sy[2] = cy;
+
     ctx.dir = DIR_RIGHT;
+     
+    ctx.fx = rand() % GRID_W;
+    ctx.fy = rand() % GRID_H;
 
     pthread_t t_tick, t_recv;
       if (pthread_create(&t_tick, NULL, tick_thread, &ctx) != 0) {

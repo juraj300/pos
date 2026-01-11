@@ -8,14 +8,20 @@
 
 #include "common/ipc.h"
 
+#define MAX_SNAKE 100
+
 typedef struct {
     int fd;
     volatile int running;
 
     pthread_mutex_t lock;
     //int x, y, tick;
-    int sx[3];
-    int sy[3];
+    int sx[MAX_SNAKE];
+    int sy[MAX_SNAKE];
+    int len;
+
+    int fx, fy;
+    int score;
     int tick;
     char dir;
 } client_ctx_t;
@@ -37,12 +43,24 @@ static void render(const client_ctx_t *ctx) {
                  for (int x = 0; x < GRID_W; x++) {
                      //if (x == ctx->x && y == ctx->y) putchar('O');
                        if (x == ctx->sx[0] && y == ctx->sy[0]) putchar('O');
-                       else if ((x == ctx->sx[1] && y == ctx->sy[1]) || (x == ctx->sx[2] && y == ctx->sy[2])) putchar('o');
-                       else putchar('.');
+                       else {
+                        int body = 0;
+                        for (int i = 1; i < ctx->len; i++) {
+                          if (x == ctx->sx[i] && y == ctx->sy[i]) {
+                            body = 1;
+                            break;
+                          }
+                        }
+                        if (body) putchar('o');
+                        else if (x == ctx->fx && y == ctx->fy) putchar('*');
+                        else putchar('.');
+      }
         }
         putchar('\n');
     }
     printf("tick=%d dir=%c  (w/a/s/d + Enter, q + Enter quits)\n", ctx->tick, ctx->dir);
+    printf("score=%d tick=%d\n", ctx->score, ctx->tick);
+
     fflush(stdout);
 }
 
@@ -53,25 +71,30 @@ static void handle_line(client_ctx_t *ctx, const char *line) {
           return;
       }
 
-      if (strncmp(line, "STATE ", 6) == 0) {
-         int x0,y0,x1,y1,x2,y2,t;
-         char d;
-         if (sscanf(line, "STATE %d %d %d %d %d %d %c %d",
-                       &x0,&y0,&x1,&y1,&x2,&y2,&d,&t) == 8) {
+      int len, score, tick;
+      int off = 0;
 
-            pthread_mutex_lock(&ctx->lock);
-            ctx->sx[0]=x0; ctx->sy[0]=y0;
-            ctx->sx[1]=x1; ctx->sy[1]=y1;
-            ctx->sx[2]=x2; ctx->sy[2]=y2;
-            ctx->dir = d;
-            ctx->tick = t;
-            client_ctx_t snapshot = *ctx;
-            pthread_mutex_unlock(&ctx->lock);
+      if (sscanf(line, "STATE %d %d %d %n", &len, &score, &tick, &off) == 3) {
+        pthread_mutex_lock(&ctx->lock);
+        ctx->len = len;
+        ctx->score = score;
+        ctx->tick = tick;
 
-            render(&snapshot);
+        const char *p = line + off;
+        for (int i = 0; i < len; i++) {
+              sscanf(p, "%d %d %n", &ctx->sx[i], &ctx->sy[i], &off);
+              p += off;
+          }
+
+        sscanf(p, "%d %d", &ctx->fx, &ctx->fy);
+
+        client_ctx_t snap = *ctx;
+        pthread_mutex_unlock(&ctx->lock);
+
+        render(&snap);
       }
     }
-}
+
 
 static void* recv_thread(void *arg) {
       client_ctx_t *ctx = (client_ctx_t*)arg;
